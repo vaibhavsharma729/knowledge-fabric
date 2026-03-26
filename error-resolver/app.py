@@ -105,13 +105,13 @@ def _render_sidebar():
             help="Leave blank to use DuckDuckGo (free, no key needed).",
         )
 
-    with st.sidebar.expander("GitHub (MCP Server)", expanded=True):
-        github_pat = st.text_input(
-            "Personal Access Token",
-            value=os.environ.get("GITHUB_PAT", ""),
-            type="password",
-            key="github_pat",
-            help="GitHub PAT with repo read access. Used by the GitHub MCP server.",
+    with st.sidebar.expander("GitHub (MCP Server + Copilot)", expanded=True):
+        aws_secret_github = st.text_input(
+            "AWS Secret Name",
+            value=os.environ.get("AWS_SECRET_GITHUB", "error-resolver/github"),
+            key="aws_secret_github",
+            help="Secrets Manager secret containing {\"pat\": \"ghp_xxx\"}. "
+                 "Leave blank to use the GITHUB_PAT OS environment variable.",
         )
         github_owner = st.text_input(
             "Repo Owner / Org",
@@ -125,6 +125,13 @@ def _render_sidebar():
         )
 
     with st.sidebar.expander("Oracle RDS (AWS)", expanded=False):
+        aws_secret_oracle = st.text_input(
+            "AWS Secret Name",
+            value=os.environ.get("AWS_SECRET_ORACLE", "error-resolver/oracle"),
+            key="aws_secret_oracle",
+            help="Secrets Manager secret containing {\"username\": \"...\", \"password\": \"...\"}. "
+                 "Leave blank to use ORACLE_USERNAME / ORACLE_PASSWORD OS environment variables.",
+        )
         oracle_host = st.text_input(
             "RDS Endpoint",
             value=os.environ.get("ORACLE_HOST", ""),
@@ -139,30 +146,18 @@ def _render_sidebar():
             value=os.environ.get("ORACLE_SERVICE_NAME", ""),
             key="oracle_svc",
         )
-        oracle_user = st.text_input(
-            "Username",
-            value=os.environ.get("ORACLE_USERNAME", ""),
-            key="oracle_user",
-        )
-        oracle_pass = st.text_input(
-            "Password",
-            value=os.environ.get("ORACLE_PASSWORD", ""),
-            type="password",
-            key="oracle_pass",
-        )
 
     if st.sidebar.button("Connect / Refresh", use_container_width=True):
         os.environ["COPILOT_MODEL"] = copilot_model
         os.environ["COPILOT_ENDPOINT"] = copilot_endpoint
-        os.environ["GITHUB_PAT"] = github_pat
+        os.environ["AWS_SECRET_GITHUB"] = aws_secret_github
         os.environ["GITHUB_REPO_OWNER"] = github_owner
         os.environ["GITHUB_REPO_NAME"] = github_repo
         os.environ["TAVILY_API_KEY"] = tavily_key
+        os.environ["AWS_SECRET_ORACLE"] = aws_secret_oracle
         os.environ["ORACLE_HOST"] = oracle_host
         os.environ["ORACLE_PORT"] = oracle_port
         os.environ["ORACLE_SERVICE_NAME"] = oracle_svc
-        os.environ["ORACLE_USERNAME"] = oracle_user
-        os.environ["ORACLE_PASSWORD"] = oracle_pass
 
         cfg = AppConfig.from_env()
         with st.spinner("Connecting..."):
