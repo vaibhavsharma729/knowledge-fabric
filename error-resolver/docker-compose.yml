@@ -1,0 +1,29 @@
+version: "3.9"
+
+# Local development — mounts your ~/.aws credentials so Secrets Manager
+# works the same way as on EC2 (IAM role replaced by your local AWS profile).
+
+services:
+  error-resolver:
+    build: .
+    ports:
+      - "8501:8501"
+    volumes:
+      # Mount AWS credentials for local Secrets Manager access
+      - ~/.aws:/root/.aws:ro
+    environment:
+      # ── AWS ──────────────────────────────────────────────────────
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      # ── Secrets Manager secret names (no passwords here) ─────────
+      AWS_SECRET_GITHUB: ${AWS_SECRET_GITHUB:-error-resolver/github}
+      AWS_SECRET_ORACLE: ${AWS_SECRET_ORACLE:-error-resolver/oracle}
+      AWS_SECRET_TAVILY: ${AWS_SECRET_TAVILY:-error-resolver/tavily}
+      # ── Non-sensitive config ──────────────────────────────────────
+      GITHUB_REPO_OWNER: ${GITHUB_REPO_OWNER:-}
+      GITHUB_REPO_NAME: ${GITHUB_REPO_NAME:-}
+      ORACLE_HOST: ${ORACLE_HOST:-}
+      ORACLE_PORT: ${ORACLE_PORT:-1521}
+      ORACLE_SERVICE_NAME: ${ORACLE_SERVICE_NAME:-ORCL}
+      COPILOT_ENDPOINT: https://models.inference.ai.azure.com
+      COPILOT_MODEL: ${COPILOT_MODEL:-gpt-4o}
+    restart: unless-stopped

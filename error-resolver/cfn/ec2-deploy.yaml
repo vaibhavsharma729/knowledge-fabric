@@ -1,0 +1,323 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Deploys the Error Resolver Streamlit app on EC2.
+  Credentials are fetched from AWS Secrets Manager via the EC2 IAM role —
+  no passwords are stored in this template or on the instance.
+
+# ─────────────────────────────────────────────────────────────────────
+# Parameters
+# ─────────────────────────────────────────────────────────────────────
+Parameters:
+
+  # ── Git repository ────────────────────────────────────────────────
+  GitHubRepoUrl:
+    Description: HTTPS URL of the repository containing the error-resolver app
+    Type: String
+    Default: https://github.com/vaibhavsharma729/knowledge-fabric.git
+
+  GitHubRepoBranch:
+    Description: Branch to deploy
+    Type: String
+    Default: claude/error-resolver-github-PrGc2
+
+  # ── Secrets Manager secret names ─────────────────────────────────
+  AwsSecretGithub:
+    Description: >
+      Secrets Manager secret name holding {"pat":"ghp_xxx"}.
+      The EC2 IAM role will be granted read access to this secret.
+    Type: String
+    Default: error-resolver/github
+
+  AwsSecretOracle:
+    Description: >
+      Secrets Manager secret name holding {"username":"...","password":"..."}.
+      The EC2 IAM role will be granted read access to this secret.
+    Type: String
+    Default: error-resolver/oracle
+
+  AwsSecretTavily:
+    Description: >
+      Secrets Manager secret name holding {"api_key":"tvly-xxx"} (optional).
+      Leave as-is to skip Tavily and use DuckDuckGo.
+    Type: String
+    Default: error-resolver/tavily
+
+  # ── Non-sensitive config ──────────────────────────────────────────
+  GitHubRepoOwner:
+    Description: GitHub organisation or username whose repo will be searched for code context
+    Type: String
+
+  GitHubRepoName:
+    Description: Repository name to search for code context
+    Type: String
+
+  OracleHost:
+    Description: AWS RDS Oracle endpoint (leave blank to disable DB context)
+    Type: String
+    Default: ""
+
+  OraclePort:
+    Description: Oracle listener port
+    Type: String
+    Default: "1521"
+
+  OracleServiceName:
+    Description: Oracle service name / SID
+    Type: String
+    Default: ORCL
+
+  CopilotModel:
+    Description: GitHub Models model ID (gpt-4o supports screenshots)
+    Type: String
+    Default: gpt-4o
+    AllowedValues:
+      - gpt-4o
+      - gpt-4o-mini
+      - o1
+      - o1-mini
+
+  # ── EC2 ───────────────────────────────────────────────────────────
+  InstanceType:
+    Description: EC2 instance type
+    Type: String
+    Default: t3.small
+    AllowedValues:
+      - t3.small
+      - t3.medium
+      - t3.large
+
+  SSHRegionIPsAllowed:
+    Description: CIDR block for EC2 Instance Connect SSH access (choose your AWS region)
+    Type: String
+    Default: 18.206.107.24/29   # us-east-1
+    AllowedValues:
+      - 18.206.107.24/29    # us-east-1
+      - 18.237.140.160/29   # us-west-2
+      - 13.52.6.112/29      # us-west-1
+      - 3.16.146.0/29       # us-east-2
+      - 13.209.1.56/29      # ap-northeast-2
+      - 3.112.23.0/29       # ap-northeast-1
+      - 13.239.158.0/29     # ap-southeast-2
+      - 3.0.5.32/29         # ap-southeast-1
+      - 13.233.177.0/29     # ap-south-1
+      - 35.183.92.176/29    # ca-central-1
+      - 3.120.181.40/29     # eu-central-1
+      - 18.202.216.48/29    # eu-west-1
+      - 3.8.37.24/29        # eu-west-2
+      - 35.180.112.80/29    # eu-west-3
+      - 13.48.4.200/30      # eu-north-1
+      - 18.228.70.32/29     # sa-east-1
+
+  VPCCIDR:
+    Type: String
+    Default: 10.0.0.0/16
+
+  VPCSubnet:
+    Type: String
+    Default: 10.0.1.0/24
+
+# ─────────────────────────────────────────────────────────────────────
+# Resources
+# ─────────────────────────────────────────────────────────────────────
+Resources:
+
+  # ── Networking ───────────────────────────────────────────────────
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VPCCIDR
+      EnableDnsHostnames: true
+      Tags: [{Key: Name, Value: ErrorResolver-VPC}]
+
+  Subnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref VPCSubnet
+      MapPublicIpOnLaunch: true
+      Tags: [{Key: Name, Value: ErrorResolver-Subnet}]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: [{Key: Name, Value: ErrorResolver-IGW}]
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags: [{Key: Name, Value: ErrorResolver-RouteTable}]
+
+  Route:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref Subnet
+      RouteTableId: !Ref RouteTable
+
+  # ── Security Group ────────────────────────────────────────────────
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Error Resolver — Streamlit (8501) + EC2 Instance Connect SSH
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8501
+          ToPort: 8501
+          CidrIp: 0.0.0.0/0
+          Description: Streamlit app
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref SSHRegionIPsAllowed
+          Description: EC2 Instance Connect
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+
+  # ── IAM Role ─────────────────────────────────────────────────────
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ErrorResolver-EC2Role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: SecretsManagerReadSecrets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AwsSecretGithub}*
+                  - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AwsSecretOracle}*
+                  - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AwsSecretTavily}*
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref EC2Role]
+
+  # ── EC2 Instance ─────────────────────────────────────────────────
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      # Ubuntu 22.04 LTS (latest AMI resolved via SSM Parameter Store)
+      ImageId: !Sub "{{resolve:ssm:/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id}}"
+      IamInstanceProfile: !Ref InstanceProfile
+      SecurityGroupIds: [!Ref InstanceSecurityGroup]
+      SubnetId: !Ref Subnet
+      EbsOptimized: true
+      Monitoring: true
+      Tags:
+        - Key: Name
+          Value: ErrorResolver-App
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          exec > >(tee /var/log/user-data.log | logger -t user-data -s 2>/dev/console) 2>&1
+
+          # ── System packages ───────────────────────────────────────
+          apt-get update -y
+          apt-get upgrade -y
+          apt-get install -y python3-pip python3.11 python3.11-venv git ec2-instance-connect curl
+
+          # ── Node.js 20 (required by GitHub MCP server: npx) ──────
+          curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+          apt-get install -y nodejs
+
+          # ── Clone repository ──────────────────────────────────────
+          git clone --branch ${GitHubRepoBranch} ${GitHubRepoUrl} /home/ubuntu/app
+          chown -R ubuntu:ubuntu /home/ubuntu/app
+
+          # ── Python virtual environment ────────────────────────────
+          python3.11 -m venv /home/ubuntu/venv
+          /home/ubuntu/venv/bin/pip install --upgrade pip
+          /home/ubuntu/venv/bin/pip install -r /home/ubuntu/app/error-resolver/requirements.txt
+
+          # ── Write .env (non-sensitive values only) ────────────────
+          cat > /home/ubuntu/app/error-resolver/.env <<'ENVEOF'
+          AWS_REGION=${AWS::Region}
+          AWS_SECRET_GITHUB=${AwsSecretGithub}
+          AWS_SECRET_ORACLE=${AwsSecretOracle}
+          AWS_SECRET_TAVILY=${AwsSecretTavily}
+          GITHUB_REPO_OWNER=${GitHubRepoOwner}
+          GITHUB_REPO_NAME=${GitHubRepoName}
+          ORACLE_HOST=${OracleHost}
+          ORACLE_PORT=${OraclePort}
+          ORACLE_SERVICE_NAME=${OracleServiceName}
+          COPILOT_ENDPOINT=https://models.inference.ai.azure.com
+          COPILOT_MODEL=${CopilotModel}
+          ENVEOF
+          chown ubuntu:ubuntu /home/ubuntu/app/error-resolver/.env
+
+          # ── systemd service ───────────────────────────────────────
+          cat > /etc/systemd/system/error-resolver.service <<'SVCEOF'
+          [Unit]
+          Description=Error Resolver Streamlit App
+          After=network.target
+
+          [Service]
+          User=ubuntu
+          WorkingDirectory=/home/ubuntu/app/error-resolver
+          ExecStart=/home/ubuntu/venv/bin/streamlit run app.py \
+            --server.port 8501 \
+            --server.address 0.0.0.0 \
+            --server.headless true
+          Restart=always
+          RestartSec=5
+          Environment=HOME=/home/ubuntu
+
+          [Install]
+          WantedBy=multi-user.target
+          SVCEOF
+
+          systemctl daemon-reload
+          systemctl enable error-resolver
+          systemctl start error-resolver
+
+# ─────────────────────────────────────────────────────────────────────
+# Outputs
+# ─────────────────────────────────────────────────────────────────────
+Outputs:
+
+  AppURL:
+    Description: Error Resolver application URL
+    Value: !Sub http://${EC2Instance.PublicDnsName}:8501
+
+  InstanceId:
+    Description: EC2 Instance ID (use for EC2 Instance Connect)
+    Value: !Ref EC2Instance
+
+  SSHCommand:
+    Description: Connect via EC2 Instance Connect
+    Value: !Sub aws ec2-instance-connect ssh --instance-id ${EC2Instance} --region ${AWS::Region}
+
+  SecretsManagerConsole:
+    Description: Store your secrets here before first launch
+    Value: !Sub https://${AWS::Region}.console.aws.amazon.com/secretsmanager/listsecrets?region=${AWS::Region}
