@@ -4,3 +4,5 @@ Pillow>=10.0.0
 python-dotenv>=1.0.0
 oracledb>=2.3.0
 mcp>=1.0.0
+duckduckgo-search>=6.0.0
+tavily-python>=0.3.0  # optional — only needed if TAVILY_API_KEY is set

@@ -1,8 +1,10 @@
 """
 Core error analysis engine using GitHub Copilot (GitHub Models API).
 
-The GitHub Models API is OpenAI-compatible, uses your GitHub PAT for auth,
-and supports multimodal input (gpt-4o can analyse screenshot images).
+Pipeline:
+  1. Extract structured error info from text or screenshot (gpt-4o vision).
+  2. Derive smarter repository search terms informed by the extracted error.
+  3. Synthesise web knowledge + repository code + DB logs into a step-by-step fix.
 
 Endpoint: https://models.inference.ai.azure.com
 Docs:     https://docs.github.com/en/github-models
@@ -43,8 +45,8 @@ class ResolutionResult:
     root_cause: str = ""
     resolution_steps: list[str] = field(default_factory=list)
     code_references: list[str] = field(default_factory=list)
-    db_references: list[str] = field(default_factory=list)
     prevention_tips: list[str] = field(default_factory=list)
+    web_sources: list[str] = field(default_factory=list)
     confidence: str = "medium"  # low / medium / high
 
 
@@ -64,7 +66,7 @@ class ErrorAnalyzer:
         )
 
     # ------------------------------------------------------------------
-    # Public API
+    # Step 1 — Extract error info
     # ------------------------------------------------------------------
 
     def extract_error_info_from_text(self, error_text: str) -> ErrorInfo:
@@ -78,7 +80,6 @@ class ErrorAnalyzer:
     ) -> ErrorInfo:
         """
         Extract error details from a screenshot using gpt-4o vision.
-
         The image is base64-encoded and sent as a multimodal message.
         """
         image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
@@ -102,13 +103,51 @@ class ErrorAnalyzer:
             response_text, raw_text=f"[Screenshot — {media_type}]"
         )
 
+    # ------------------------------------------------------------------
+    # Step 2 — Derive smarter repo search terms from error info
+    # ------------------------------------------------------------------
+
+    def derive_repo_search_terms(self, error_info: ErrorInfo, web_context: str = "") -> list[str]:
+        """
+        Ask Copilot to suggest targeted search terms for the codebase.
+
+        Web context (if available) enriches this — e.g. the web may reveal
+        that ORA-00942 is a missing table, so the terms would be table names
+        and the SQL query, not just "ORA-00942".
+        """
+        prompt = _SEARCH_TERMS_PROMPT.format(
+            error_type=error_info.error_type,
+            error_code=error_info.error_code,
+            error_message=error_info.error_message,
+            stack_trace=error_info.stack_trace or "N/A",
+            web_context=web_context or "Not available.",
+        )
+        response_text = self._chat([{"role": "user", "content": prompt}])
+        try:
+            data = _extract_json(response_text)
+            return data.get("search_terms", error_info.keywords)
+        except Exception:
+            return error_info.keywords
+
+    # ------------------------------------------------------------------
+    # Step 3 — Generate resolution
+    # ------------------------------------------------------------------
+
     def generate_resolution(
         self,
         error_info: ErrorInfo,
+        web_context: str = "",
         github_context: str = "",
         db_context: str = "",
     ) -> ResolutionResult:
-        """Generate step-by-step resolution given error info and context."""
+        """
+        Generate step-by-step resolution.
+
+        Resolution is grounded in this priority order:
+          1. Web knowledge (what the error is, established fixes)
+          2. Repository code (where it occurs in *this* codebase)
+          3. DB error logs (historical occurrences in *this* environment)
+        """
         prompt = _RESOLUTION_PROMPT.format(
             error_type=error_info.error_type,
             error_code=error_info.error_code,
@@ -116,36 +155,12 @@ class ErrorAnalyzer:
             stack_trace=error_info.stack_trace or "N/A",
             file_path=error_info.file_path or "N/A",
             line_number=error_info.line_number or "N/A",
-            github_context=github_context or "No GitHub code context available.",
+            web_context=web_context or "Not available.",
+            github_context=github_context or "No repository code context available.",
             db_context=db_context or "No database context available.",
         )
         response_text = self._chat([{"role": "user", "content": prompt}])
         return _parse_resolution(response_text, error_info)
-
-    def analyze(
-        self,
-        text_input: Optional[str] = None,
-        image_bytes: Optional[bytes] = None,
-        image_media_type: str = "image/png",
-        github_context: str = "",
-        db_context: str = "",
-    ) -> ResolutionResult:
-        """
-        End-to-end: extract error info then generate resolution.
-        Image input takes precedence over text if both are provided.
-        """
-        if image_bytes:
-            error_info = self.extract_error_info_from_image(image_bytes, image_media_type)
-        elif text_input:
-            error_info = self.extract_error_info_from_text(text_input)
-        else:
-            raise ValueError("Either text_input or image_bytes must be provided.")
-
-        return self.generate_resolution(
-            error_info=error_info,
-            github_context=github_context,
-            db_context=db_context,
-        )
 
     # ------------------------------------------------------------------
     # GitHub Copilot (GitHub Models API) invocation
@@ -205,9 +220,36 @@ Respond with a JSON object (and nothing else) in this exact format:
 }
 """
 
+_SEARCH_TERMS_PROMPT = """\
+You are a senior developer. Based on the error details and web research below, suggest the \
+best search terms to find the relevant code in the application's GitHub repository.
+
+## Error
+- Type: {error_type}
+- Code: {error_code}
+- Message: {error_message}
+- Stack Trace: {stack_trace}
+
+## Web Research (what we know about this error)
+{web_context}
+
+Generate 4-8 specific search terms that a developer would use to find the exact code \
+responsible for this error — e.g. function names, class names, SQL table names, config keys, \
+exception class names, specific string literals from the stack trace, etc.
+
+Respond with a JSON object (and nothing else):
+{{
+  "search_terms": ["<term1>", "<term2>", ...]
+}}
+"""
+
 _RESOLUTION_PROMPT = """\
-You are a senior software engineer and database administrator. Your job is to diagnose \
-and resolve the following error with clear, actionable steps.
+You are a senior software engineer and database administrator providing a step-by-step fix \
+for an error. You have three sources of context — use them in this order of priority:
+
+  1. **Web knowledge** — what is known about this error globally (authoritative)
+  2. **Repository code** — where and how the error manifests in THIS specific codebase
+  3. **Database logs** — historical occurrences in THIS specific environment
 
 ## Error Details
 - **Type**: {error_type}
@@ -217,30 +259,36 @@ and resolve the following error with clear, actionable steps.
 {stack_trace}
 - **File**: {file_path} (line {line_number})
 
-## Relevant Source Code (from GitHub)
+## Web Research (global knowledge about this error)
+{web_context}
+
+## Repository Code (from GitHub — the actual application code)
 {github_context}
 
-## Relevant Database Logs (from Oracle RDS)
+## Database Logs (from Oracle RDS)
 {db_context}
 
 ---
 
-Based on all the above context, provide:
+Using ALL of the above, provide:
 
-1. **Root Cause** — A concise explanation of why this error occurs (2-4 sentences).
-2. **Resolution Steps** — A numbered list of exact steps to fix the error. Be specific: include \
-file names, SQL statements, config changes, or commands where applicable.
-3. **Code References** — List any specific files, functions, or DB objects the developer \
-should inspect or modify.
-4. **Prevention Tips** — 2-3 tips to prevent this error in future.
-5. **Confidence** — Your confidence level: low, medium, or high.
+1. **Root Cause** — explain exactly why this error occurs, combining global knowledge with \
+what you can see in the repository code (2-4 sentences).
+2. **Resolution Steps** — numbered, specific, actionable steps referencing actual file names, \
+function names, SQL statements, or config values found in the repository code where possible.
+3. **Code References** — exact files, functions, or DB objects in the repository that need \
+to be changed or inspected.
+4. **Prevention Tips** — 2-3 tips specific to this codebase to prevent recurrence.
+5. **Web Sources** — list the URLs from the web research that were most relevant.
+6. **Confidence** — low, medium, or high.
 
-Respond with a JSON object (and nothing else) in this exact format:
+Respond with a JSON object (and nothing else):
 {{
   "root_cause": "<explanation>",
   "resolution_steps": ["<step 1>", "<step 2>", ...],
   "code_references": ["<file or function>", ...],
-  "prevention_tips": ["<tip 1>", "<tip 2>", ...],
+  "prevention_tips": ["<tip>", ...],
+  "web_sources": ["<url>", ...],
   "confidence": "low|medium|high"
 }}
 """
@@ -282,6 +330,7 @@ def _parse_resolution(response_text: str, error_info: ErrorInfo) -> ResolutionRe
             resolution_steps=data.get("resolution_steps", []),
             code_references=data.get("code_references", []),
             prevention_tips=data.get("prevention_tips", []),
+            web_sources=data.get("web_sources", []),
             confidence=data.get("confidence", "medium"),
         )
     except Exception as e:

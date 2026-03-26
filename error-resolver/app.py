@@ -17,6 +17,7 @@ from config import AppConfig
 from error_analyzer import ErrorAnalyzer, ResolutionResult
 from github_client import GitHubMCPClient
 from oracle_client import OracleClient
+from web_search import WebSearchClient
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -41,6 +42,7 @@ def _init_state():
         "analyzer": None,
         "github_client": None,
         "oracle_client": None,
+        "web_search_client": None,
         "oracle_connected": False,
         "resolution": None,
         "history": [],
@@ -53,6 +55,7 @@ def _init_state():
 def _build_clients(cfg: AppConfig):
     st.session_state.config = cfg
     st.session_state.analyzer = ErrorAnalyzer(cfg.copilot)
+    st.session_state.web_search_client = WebSearchClient(tavily_api_key=cfg.tavily_api_key)
     if cfg.github.personal_access_token:
         st.session_state.github_client = GitHubMCPClient(cfg.github)
     if cfg.oracle.host:
@@ -86,6 +89,20 @@ def _render_sidebar():
                 "COPILOT_ENDPOINT", "https://models.inference.ai.azure.com"
             ),
             key="copilot_endpoint",
+        )
+
+    with st.sidebar.expander("Web Search", expanded=False):
+        st.caption(
+            "Used to research the error before looking at your codebase. "
+            "DuckDuckGo is used by default (free). "
+            "Add a Tavily key for richer AI-optimised results."
+        )
+        tavily_key = st.text_input(
+            "Tavily API Key (optional)",
+            value=os.environ.get("TAVILY_API_KEY", ""),
+            type="password",
+            key="tavily_key",
+            help="Leave blank to use DuckDuckGo (free, no key needed).",
         )
 
     with st.sidebar.expander("GitHub (MCP Server)", expanded=True):
@@ -140,6 +157,7 @@ def _render_sidebar():
         os.environ["GITHUB_PAT"] = github_pat
         os.environ["GITHUB_REPO_OWNER"] = github_owner
         os.environ["GITHUB_REPO_NAME"] = github_repo
+        os.environ["TAVILY_API_KEY"] = tavily_key
         os.environ["ORACLE_HOST"] = oracle_host
         os.environ["ORACLE_PORT"] = oracle_port
         os.environ["ORACLE_SERVICE_NAME"] = oracle_svc
@@ -234,19 +252,25 @@ def _render_input_section():
         # Options row
         col_a, col_b, col_c = st.columns(3)
         with col_a:
-            use_github = st.checkbox(
-                "Search GitHub for code context",
-                value=bool(st.session_state.github_client),
-                disabled=not bool(st.session_state.github_client),
+            use_web = st.checkbox(
+                "Search web for error context",
+                value=True,
+                help="Research the error online before looking at your code.",
             )
         with col_b:
-            use_oracle = st.checkbox(
-                "Query Oracle DB for error logs",
-                value=st.session_state.oracle_connected,
-                disabled=not st.session_state.oracle_connected,
+            use_github = st.checkbox(
+                "Search GitHub repository",
+                value=bool(st.session_state.github_client),
+                disabled=not bool(st.session_state.github_client),
+                help="Find where the error occurs in your application code.",
             )
         with col_c:
-            pass
+            use_oracle = st.checkbox(
+                "Query Oracle DB logs",
+                value=st.session_state.oracle_connected,
+                disabled=not st.session_state.oracle_connected,
+                help="Check historical error occurrences in your RDS database.",
+            )
 
         if st.button("Analyze & Resolve", type="primary", use_container_width=True):
             if not st.session_state.analyzer:
@@ -264,6 +288,7 @@ def _render_input_section():
                 error_text=error_text,
                 image_bytes=image_bytes,
                 image_media_type=image_media_type,
+                use_web=use_web,
                 use_github=use_github,
                 use_oracle=use_oracle,
             )
@@ -290,46 +315,70 @@ def _run_analysis(
     error_text: Optional[str],
     image_bytes: Optional[bytes],
     image_media_type: str,
+    use_web: bool,
     use_github: bool,
     use_oracle: bool,
 ):
     analyzer: ErrorAnalyzer = st.session_state.analyzer
+    web_client: Optional[WebSearchClient] = st.session_state.web_search_client
     github_client: Optional[GitHubMCPClient] = st.session_state.github_client
     oracle_client: Optional[OracleClient] = st.session_state.oracle_client
 
     with st.status("Analyzing error...", expanded=True) as status:
-        # Step 1: Extract error info
-        st.write("Extracting error details...")
+
+        # ── Step 1: Extract error info from text or screenshot ──────────
+        st.write("**Step 1/4** — Extracting error details from input...")
         if image_bytes:
             error_info = analyzer.extract_error_info_from_image(image_bytes, image_media_type)
         else:
             error_info = analyzer.extract_error_info_from_text(error_text)
 
-        st.write(
-            f"Identified: **{error_info.error_type}** "
-            f"{('(' + error_info.error_code + ')') if error_info.error_code else ''}"
-        )
+        label = error_info.error_type
+        if error_info.error_code:
+            label += f" ({error_info.error_code})"
+        st.write(f"Identified: **{label}**")
 
-        # Step 2: GitHub context
-        github_context = ""
-        if use_github and github_client and error_info.keywords:
-            st.write("Searching GitHub for relevant code...")
-            github_context = github_client.get_relevant_code_context(error_info.keywords)
-            st.write(
-                f"GitHub context: {len(github_context)} characters retrieved."
+        # ── Step 2: Web search — understand the error before touching code ──
+        web_context = ""
+        if use_web and web_client:
+            st.write("**Step 2/4** — Researching error on the web...")
+            web_result = web_client.research_error(
+                error_type=error_info.error_type,
+                error_message=error_info.error_message,
+                error_code=error_info.error_code,
+                stack_trace=error_info.stack_trace,
             )
+            web_context = web_result.formatted
+            st.write(f"Found {len(web_result.results)} web sources.")
+        else:
+            st.write("**Step 2/4** — Web search skipped.")
 
-        # Step 3: Oracle context
+        # ── Step 3: GitHub — find where the error lives in the codebase ──
+        github_context = ""
+        if use_github and github_client:
+            st.write("**Step 3/4** — Deriving repository search terms...")
+            # Let Copilot pick smarter terms informed by web knowledge
+            search_terms = analyzer.derive_repo_search_terms(error_info, web_context)
+            st.write(f"Searching GitHub for: `{', '.join(search_terms[:4])}`...")
+            github_context = github_client.get_relevant_code_context(search_terms)
+            st.write(f"Retrieved {len(github_context)} characters of repository code.")
+        else:
+            st.write("**Step 3/4** — GitHub search skipped.")
+
+        # ── Step 4 (optional): Oracle DB error logs ──────────────────────
         db_context = ""
-        if use_oracle and oracle_client and error_info.keywords:
-            st.write("Querying Oracle DB for error logs...")
+        if use_oracle and oracle_client:
+            st.write("**Step 4/4** — Querying Oracle DB for error logs...")
             db_context = oracle_client.get_db_context_for_error(error_info.keywords)
-            st.write("DB context retrieved.")
+            st.write("Database context retrieved.")
+        else:
+            st.write("**Step 4/4** — Oracle DB query skipped.")
 
-        # Step 4: Generate resolution
-        st.write("Generating resolution steps...")
+        # ── Generate resolution ───────────────────────────────────────────
+        st.write("Synthesising resolution with GitHub Copilot...")
         resolution = analyzer.generate_resolution(
             error_info=error_info,
+            web_context=web_context,
             github_context=github_context,
             db_context=db_context,
         )
@@ -401,6 +450,12 @@ def _render_resolution(result: ResolutionResult):
         for tip in result.prevention_tips:
             st.markdown(f"- {tip}")
 
+    # Web sources used
+    if result.web_sources:
+        st.markdown("### Web Sources Referenced")
+        for url in result.web_sources:
+            st.markdown(f"- {url}")
+
     # Download
     import json as _json
 
@@ -413,6 +468,7 @@ def _render_resolution(result: ResolutionResult):
             "resolution_steps": result.resolution_steps,
             "code_references": result.code_references,
             "prevention_tips": result.prevention_tips,
+            "web_sources": result.web_sources,
             "confidence": result.confidence,
         },
         indent=2,

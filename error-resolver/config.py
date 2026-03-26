@@ -77,6 +77,7 @@ class AppConfig:
     github: GitHubConfig
     oracle: OracleConfig
     copilot: CopilotConfig
+    tavily_api_key: str = ""  # Optional — DuckDuckGo is used when blank
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -84,4 +85,5 @@ class AppConfig:
             github=GitHubConfig.from_env(),
             oracle=OracleConfig.from_env(),
             copilot=CopilotConfig.from_env(),
+            tavily_api_key=os.environ.get("TAVILY_API_KEY", ""),
         )
