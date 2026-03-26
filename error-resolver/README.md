@@ -7,7 +7,7 @@ AI-powered error analysis and step-by-step resolution tool.
 - **Screenshot or text input** — paste an error/stack trace or upload a screenshot
 - **GitHub MCP Server** — searches your repository for code context relevant to the error
 - **AWS RDS Oracle** — queries your Oracle DB error logs for historical occurrences
-- **AWS Bedrock (Claude)** — multimodal AI that synthesizes all context and generates step-by-step fixes
+- **GitHub Copilot (GitHub Models API)** — multimodal AI (gpt-4o) that synthesizes all context and generates step-by-step fixes
 - **Downloadable report** — export the resolution as JSON
 
 ## Architecture
@@ -23,7 +23,7 @@ User Input (text or screenshot)
          ▼
 ┌───────────────────┐
 │  Error Analyzer   │ ◄─── error_analyzer.py
-│  (Bedrock Claude) │
+│  (GitHub Copilot) │
 └──┬────────────────┘
    │
    ├──────────────────────────────────────┐
@@ -43,9 +43,8 @@ User Input (text or screenshot)
 
 - Python 3.11+
 - Node.js 18+ (for the GitHub MCP server)
-- AWS account with Bedrock access (Claude 3.5 Sonnet model enabled)
-- AWS RDS Oracle instance (optional)
-- GitHub Personal Access Token with `repo` read scope
+- GitHub Personal Access Token with `models:read` + `repo:read` scopes
+- AWS RDS Oracle instance (optional — for DB error log context)
 
 ## Setup
 
@@ -74,11 +73,12 @@ cp .env.example .env
 # Edit .env with your actual values
 ```
 
-### 4. Enable Claude model in AWS Bedrock
+### 4. Enable GitHub Models access
 
-1. Open [AWS Bedrock Console](https://console.aws.amazon.com/bedrock)
-2. Go to **Model access**
-3. Enable **Claude 3.5 Sonnet v2** (`anthropic.claude-3-5-sonnet-20241022-v2:0`)
+1. Sign in to github.com with a Copilot-enabled account (individual or org)
+2. Create a PAT at **Settings → Developer settings → Personal access tokens**
+3. Grant scopes: `models:read` (for Copilot API) and `repo` (for MCP server)
+4. Set `GITHUB_PAT` in your `.env` file
 
 ### 5. Run the application
 
@@ -128,15 +128,32 @@ Expected columns:
 | MODULE_NAME   | VARCHAR2(200) | Application module              |
 | USER_ID       | VARCHAR2(100) | User who triggered the error    |
 
-## GitHub Copilot Integration
+## GitHub Copilot — How It's Used
 
-This project is designed to work well with **GitHub Copilot**:
+### As the AI engine (GitHub Models API)
 
-1. Open the project in VS Code or JetBrains with the GitHub Copilot extension
-2. Copilot provides inline suggestions as you extend `error_analyzer.py`,
-   `github_client.py`, or `oracle_client.py`
-3. Use **Copilot Chat** (`Ctrl+Shift+I`) to ask questions about the codebase
-4. The `.mcp.json` file registers the GitHub MCP server for Claude Code sessions
+`error_analyzer.py` calls GitHub Copilot through the **GitHub Models API** —
+an OpenAI-compatible endpoint that uses your GitHub PAT for authentication:
+
+```
+POST https://models.inference.ai.azure.com/chat/completions
+Authorization: Bearer <GITHUB_PAT>
+Model: gpt-4o
+```
+
+- **Text errors** → sends the error text in a chat message
+- **Screenshot errors** → encodes the image as base64 and uses gpt-4o's vision capability
+- No Azure subscription or OpenAI account needed — just a GitHub PAT
+
+### Available models
+
+| Model | Supports images | Notes |
+|-------|----------------|-------|
+| `gpt-4o` | Yes | Best for screenshots; default |
+| `gpt-4o-mini` | Yes | Faster / cheaper |
+| `o1` | No | Best reasoning for complex errors |
+
+Change the model via `COPILOT_MODEL` in `.env` or the sidebar.
 
 ## File Structure
 

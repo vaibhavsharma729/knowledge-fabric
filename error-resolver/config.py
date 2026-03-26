@@ -45,16 +45,29 @@ class OracleConfig:
 
 
 @dataclass
-class BedrockConfig:
-    region: str
-    model_id: str
+class CopilotConfig:
+    """
+    GitHub Copilot configuration using the GitHub Models API.
+
+    The GitHub Models API is OpenAI-compatible and is accessed with your
+    GitHub Personal Access Token (same PAT used for GitHub MCP server access).
+
+    Endpoint: https://models.inference.ai.azure.com
+    Docs: https://docs.github.com/en/github-models
+    """
+
+    github_token: str
+    # gpt-4o supports vision (screenshot analysis); swap for gpt-4o-mini to reduce cost
+    model: str
+    endpoint: str
 
     @classmethod
-    def from_env(cls) -> "BedrockConfig":
+    def from_env(cls) -> "CopilotConfig":
         return cls(
-            region=os.environ.get("AWS_REGION", "us-east-1"),
-            model_id=os.environ.get(
-                "BEDROCK_MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0"
+            github_token=os.environ.get("GITHUB_PAT", ""),
+            model=os.environ.get("COPILOT_MODEL", "gpt-4o"),
+            endpoint=os.environ.get(
+                "COPILOT_ENDPOINT", "https://models.inference.ai.azure.com"
             ),
         )
 
@@ -63,12 +76,12 @@ class BedrockConfig:
 class AppConfig:
     github: GitHubConfig
     oracle: OracleConfig
-    bedrock: BedrockConfig
+    copilot: CopilotConfig
 
     @classmethod
     def from_env(cls) -> "AppConfig":
         return cls(
             github=GitHubConfig.from_env(),
             oracle=OracleConfig.from_env(),
-            bedrock=BedrockConfig.from_env(),
+            copilot=CopilotConfig.from_env(),
         )

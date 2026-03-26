@@ -52,7 +52,7 @@ def _init_state():
 
 def _build_clients(cfg: AppConfig):
     st.session_state.config = cfg
-    st.session_state.analyzer = ErrorAnalyzer(cfg.bedrock)
+    st.session_state.analyzer = ErrorAnalyzer(cfg.copilot)
     if cfg.github.personal_access_token:
         st.session_state.github_client = GitHubMCPClient(cfg.github)
     if cfg.oracle.host:
@@ -69,16 +69,23 @@ def _build_clients(cfg: AppConfig):
 def _render_sidebar():
     st.sidebar.title("Configuration")
 
-    with st.sidebar.expander("AWS Bedrock", expanded=True):
-        bedrock_region = st.text_input(
-            "AWS Region", value=os.environ.get("AWS_REGION", "us-east-1"), key="bedrock_region"
+    with st.sidebar.expander("GitHub Copilot", expanded=True):
+        st.caption(
+            "Uses the GitHub Models API (OpenAI-compatible). "
+            "Your GitHub PAT is shared with the MCP server below."
         )
-        bedrock_model = st.text_input(
-            "Model ID",
+        copilot_model = st.text_input(
+            "Model",
+            value=os.environ.get("COPILOT_MODEL", "gpt-4o"),
+            key="copilot_model",
+            help="gpt-4o supports screenshot analysis. Use gpt-4o-mini to reduce cost.",
+        )
+        copilot_endpoint = st.text_input(
+            "Endpoint",
             value=os.environ.get(
-                "BEDROCK_MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0"
+                "COPILOT_ENDPOINT", "https://models.inference.ai.azure.com"
             ),
-            key="bedrock_model",
+            key="copilot_endpoint",
         )
 
     with st.sidebar.expander("GitHub (MCP Server)", expanded=True):
@@ -128,8 +135,8 @@ def _render_sidebar():
         )
 
     if st.sidebar.button("Connect / Refresh", use_container_width=True):
-        os.environ["AWS_REGION"] = bedrock_region
-        os.environ["BEDROCK_MODEL_ID"] = bedrock_model
+        os.environ["COPILOT_MODEL"] = copilot_model
+        os.environ["COPILOT_ENDPOINT"] = copilot_endpoint
         os.environ["GITHUB_PAT"] = github_pat
         os.environ["GITHUB_REPO_OWNER"] = github_owner
         os.environ["GITHUB_REPO_NAME"] = github_repo
@@ -154,9 +161,9 @@ def _render_sidebar():
     col1, col2 = st.sidebar.columns(2)
     with col1:
         if st.session_state.analyzer:
-            st.success("Bedrock ✓")
+            st.success("Copilot ✓")
         else:
-            st.info("Bedrock –")
+            st.info("Copilot –")
     with col2:
         if st.session_state.github_client:
             st.success("GitHub ✓")
@@ -244,8 +251,8 @@ def _render_input_section():
         if st.button("Analyze & Resolve", type="primary", use_container_width=True):
             if not st.session_state.analyzer:
                 st.error(
-                    "Bedrock client not initialized. "
-                    "Fill in the configuration in the sidebar and click **Connect / Refresh**."
+                    "GitHub Copilot client not initialized. "
+                    "Add your GitHub PAT in the sidebar and click **Connect / Refresh**."
                 )
                 return
 
@@ -428,7 +435,7 @@ def main():
     # Auto-initialize from env on first load
     if st.session_state.analyzer is None:
         cfg = AppConfig.from_env()
-        if cfg.bedrock.region:
+        if cfg.copilot.github_token:
             _build_clients(cfg)
 
     _render_sidebar()

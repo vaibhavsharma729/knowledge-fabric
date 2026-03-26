@@ -1,8 +1,11 @@
 """
-Core error analysis engine using AWS Bedrock (Claude multimodal).
+Core error analysis engine using GitHub Copilot (GitHub Models API).
 
-Accepts error text or a screenshot image, extracts error details,
-enriches context from GitHub and Oracle, and returns step-by-step resolution.
+The GitHub Models API is OpenAI-compatible, uses your GitHub PAT for auth,
+and supports multimodal input (gpt-4o can analyse screenshot images).
+
+Endpoint: https://models.inference.ai.azure.com
+Docs:     https://docs.github.com/en/github-models
 """
 import base64
 import json
@@ -11,9 +14,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-import boto3
+from openai import OpenAI
 
-from config import BedrockConfig
+from config import CopilotConfig
 
 logger = logging.getLogger(__name__)
 
@@ -47,17 +50,17 @@ class ResolutionResult:
 
 class ErrorAnalyzer:
     """
-    Analyzes errors using AWS Bedrock Claude.
+    Analyses errors using GitHub Copilot via the GitHub Models API.
 
-    Supports both text input and image (screenshot) input via
-    Claude's multimodal capabilities.
+    The client is an OpenAI-compatible SDK instance pointed at the GitHub
+    Models endpoint and authenticated with your GitHub PAT.
     """
 
-    def __init__(self, config: BedrockConfig):
+    def __init__(self, config: CopilotConfig):
         self.config = config
-        self._client = boto3.client(
-            service_name="bedrock-runtime",
-            region_name=config.region,
+        self._client = OpenAI(
+            base_url=config.endpoint,
+            api_key=config.github_token,
         )
 
     # ------------------------------------------------------------------
@@ -65,20 +68,39 @@ class ErrorAnalyzer:
     # ------------------------------------------------------------------
 
     def extract_error_info_from_text(self, error_text: str) -> ErrorInfo:
-        """
-        Use Claude to extract structured error details from raw error text.
-        """
+        """Extract structured error details from raw error text."""
         prompt = _EXTRACT_PROMPT.format(error_text=error_text)
-        response_text = self._invoke_text(prompt)
+        response_text = self._chat([{"role": "user", "content": prompt}])
         return _parse_error_info(response_text, raw_text=error_text)
 
-    def extract_error_info_from_image(self, image_bytes: bytes, media_type: str = "image/png") -> ErrorInfo:
+    def extract_error_info_from_image(
+        self, image_bytes: bytes, media_type: str = "image/png"
+    ) -> ErrorInfo:
         """
-        Use Claude's vision capability to extract error details from a screenshot.
+        Extract error details from a screenshot using gpt-4o vision.
+
+        The image is base64-encoded and sent as a multimodal message.
         """
-        prompt = _EXTRACT_PROMPT_IMAGE
-        response_text = self._invoke_with_image(prompt, image_bytes, media_type)
-        return _parse_error_info(response_text, raw_text=f"[Image input - {media_type}]")
+        image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{media_type};base64,{image_b64}",
+                            "detail": "high",
+                        },
+                    },
+                    {"type": "text", "text": _EXTRACT_PROMPT_IMAGE},
+                ],
+            }
+        ]
+        response_text = self._chat(messages)
+        return _parse_error_info(
+            response_text, raw_text=f"[Screenshot — {media_type}]"
+        )
 
     def generate_resolution(
         self,
@@ -86,10 +108,7 @@ class ErrorAnalyzer:
         github_context: str = "",
         db_context: str = "",
     ) -> ResolutionResult:
-        """
-        Generate step-by-step resolution steps given error info and optional
-        code/DB context retrieved from GitHub and Oracle.
-        """
+        """Generate step-by-step resolution given error info and context."""
         prompt = _RESOLUTION_PROMPT.format(
             error_type=error_info.error_type,
             error_code=error_info.error_code,
@@ -100,8 +119,7 @@ class ErrorAnalyzer:
             github_context=github_context or "No GitHub code context available.",
             db_context=db_context or "No database context available.",
         )
-
-        response_text = self._invoke_text(prompt)
+        response_text = self._chat([{"role": "user", "content": prompt}])
         return _parse_resolution(response_text, error_info)
 
     def analyze(
@@ -113,9 +131,8 @@ class ErrorAnalyzer:
         db_context: str = "",
     ) -> ResolutionResult:
         """
-        End-to-end analysis: extract error info then generate resolution.
-
-        Accepts either text or image input (image takes precedence if both given).
+        End-to-end: extract error info then generate resolution.
+        Image input takes precedence over text if both are provided.
         """
         if image_bytes:
             error_info = self.extract_error_info_from_image(image_bytes, image_media_type)
@@ -131,56 +148,22 @@ class ErrorAnalyzer:
         )
 
     # ------------------------------------------------------------------
-    # Bedrock invocation helpers
+    # GitHub Copilot (GitHub Models API) invocation
     # ------------------------------------------------------------------
 
-    def _invoke_text(self, prompt: str) -> str:
-        """Invoke Claude on Bedrock with a text-only prompt."""
-        body = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 4096,
-            "messages": [{"role": "user", "content": prompt}],
-        }
-        return self._invoke(body)
-
-    def _invoke_with_image(self, prompt: str, image_bytes: bytes, media_type: str) -> str:
-        """Invoke Claude on Bedrock with an image + text prompt."""
-        image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
-        body = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 4096,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": media_type,
-                                "data": image_b64,
-                            },
-                        },
-                        {"type": "text", "text": prompt},
-                    ],
-                }
-            ],
-        }
-        return self._invoke(body)
-
-    def _invoke(self, body: dict) -> str:
+    def _chat(self, messages: list[dict]) -> str:
+        """Call the GitHub Models API via the OpenAI-compatible client."""
         try:
-            response = self._client.invoke_model(
-                modelId=self.config.model_id,
-                body=json.dumps(body),
-                contentType="application/json",
-                accept="application/json",
+            response = self._client.chat.completions.create(
+                model=self.config.model,
+                messages=messages,
+                max_tokens=4096,
+                temperature=0.2,
             )
-            result = json.loads(response["body"].read())
-            return result["content"][0]["text"]
+            return response.choices[0].message.content or ""
         except Exception as e:
-            logger.error("Bedrock invocation failed: %s", e)
-            return f"Error: Bedrock invocation failed — {e}"
+            logger.error("GitHub Copilot API call failed: %s", e)
+            return f"Error: GitHub Copilot API call failed — {e}"
 
 
 # ------------------------------------------------------------------
@@ -268,7 +251,6 @@ Respond with a JSON object (and nothing else) in this exact format:
 # ------------------------------------------------------------------
 
 def _parse_error_info(response_text: str, raw_text: str = "") -> ErrorInfo:
-    """Parse Claude's JSON response into an ErrorInfo object."""
     try:
         data = _extract_json(response_text)
         return ErrorInfo(
@@ -283,7 +265,6 @@ def _parse_error_info(response_text: str, raw_text: str = "") -> ErrorInfo:
         )
     except Exception as e:
         logger.warning("Failed to parse error info JSON: %s", e)
-        # Fallback: treat the whole input as the message
         return ErrorInfo(
             error_type="Unknown",
             error_message=raw_text[:500],
@@ -293,7 +274,6 @@ def _parse_error_info(response_text: str, raw_text: str = "") -> ErrorInfo:
 
 
 def _parse_resolution(response_text: str, error_info: ErrorInfo) -> ResolutionResult:
-    """Parse Claude's JSON resolution response into a ResolutionResult."""
     try:
         data = _extract_json(response_text)
         return ResolutionResult(
@@ -314,12 +294,9 @@ def _parse_resolution(response_text: str, error_info: ErrorInfo) -> ResolutionRe
 
 
 def _extract_json(text: str) -> dict:
-    """Extract a JSON object from text that may contain markdown fences."""
-    # Strip markdown code fences if present
     match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if match:
         return json.loads(match.group(1))
-    # Try raw JSON object
     match = re.search(r"\{.*\}", text, re.DOTALL)
     if match:
         return json.loads(match.group(0))
@@ -327,7 +304,6 @@ def _extract_json(text: str) -> dict:
 
 
 def _simple_keywords(text: str) -> list[str]:
-    """Extract a few keywords from error text as a fallback."""
     words = re.findall(r"\b[A-Za-z][A-Za-z0-9_]{3,}\b", text)
     seen: set[str] = set()
     result: list[str] = []
