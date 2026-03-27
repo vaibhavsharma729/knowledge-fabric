@@ -1,0 +1,238 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Deploys the Error Resolver Streamlit app on AWS App Runner.
+  App Runner pulls the container image from ECR and injects secrets
+  directly from Secrets Manager — no passwords in env files or config.
+
+# ─────────────────────────────────────────────────────────────────────
+# Parameters
+# ─────────────────────────────────────────────────────────────────────
+Parameters:
+
+  # ── Container image ───────────────────────────────────────────────
+  ECRImageURI:
+    Description: >
+      Full ECR image URI including tag, e.g.
+      123456789012.dkr.ecr.us-east-1.amazonaws.com/error-resolver:latest
+      Run scripts/deploy.sh first — it builds, pushes, and prints this value.
+    Type: String
+
+  # ── Secrets Manager secret names ─────────────────────────────────
+  AwsSecretGithub:
+    Description: >
+      Secret name holding {"pat":"ghp_xxx"}.
+      App Runner injects the value directly as the GITHUB_PAT env var.
+    Type: String
+    Default: error-resolver/github
+
+  AwsSecretOracle:
+    Description: >
+      Secret name holding {"username":"...","password":"..."}.
+      App Runner injects values as ORACLE_USERNAME / ORACLE_PASSWORD env vars.
+    Type: String
+    Default: error-resolver/oracle
+
+  AwsSecretTavily:
+    Description: >
+      Secret name holding {"api_key":"tvly-xxx"} (optional).
+      Leave default to skip Tavily and use DuckDuckGo.
+    Type: String
+    Default: error-resolver/tavily
+
+  # ── Non-sensitive config ──────────────────────────────────────────
+  GitHubRepoOwner:
+    Description: GitHub organisation or username whose repo will be searched
+    Type: String
+
+  GitHubRepoName:
+    Description: Repository name to search for code context
+    Type: String
+
+  OracleHost:
+    Description: AWS RDS Oracle endpoint (leave blank to skip DB context)
+    Type: String
+    Default: ""
+
+  OraclePort:
+    Type: String
+    Default: "1521"
+
+  OracleServiceName:
+    Type: String
+    Default: ORCL
+
+  CopilotModel:
+    Description: GitHub Models model ID (gpt-4o supports screenshots)
+    Type: String
+    Default: gpt-4o
+    AllowedValues: [gpt-4o, gpt-4o-mini, o1, o1-mini]
+
+  # ── App Runner sizing ─────────────────────────────────────────────
+  Cpu:
+    Description: vCPU allocated to each App Runner instance
+    Type: String
+    Default: "1 vCPU"
+    AllowedValues: ["0.25 vCPU", "0.5 vCPU", "1 vCPU", "2 vCPU", "4 vCPU"]
+
+  Memory:
+    Description: Memory allocated to each App Runner instance
+    Type: String
+    Default: "2 GB"
+    AllowedValues: ["0.5 GB", "1 GB", "2 GB", "3 GB", "4 GB", "6 GB", "8 GB"]
+
+  MinInstances:
+    Description: Minimum number of running instances (0 = scale to zero when idle)
+    Type: Number
+    Default: 1
+    MinValue: 0
+    MaxValue: 25
+
+  MaxInstances:
+    Description: Maximum number of concurrent instances
+    Type: Number
+    Default: 5
+    MinValue: 1
+    MaxValue: 25
+
+# ─────────────────────────────────────────────────────────────────────
+# Resources
+# ─────────────────────────────────────────────────────────────────────
+Resources:
+
+  # ── IAM: allow App Runner to pull from ECR ────────────────────────
+  AppRunnerECRAccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ErrorResolver-AppRunner-ECRAccess
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: build.apprunner.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess
+
+  # ── IAM: allow the running app to read Secrets Manager ───────────
+  AppRunnerInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ErrorResolver-AppRunner-InstanceRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: tasks.apprunner.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SecretsManagerRead
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AwsSecretGithub}*
+                  - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AwsSecretOracle}*
+                  - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AwsSecretTavily}*
+
+  # ── Auto-scaling configuration ────────────────────────────────────
+  AutoScalingConfig:
+    Type: AWS::AppRunner::AutoScalingConfiguration
+    Properties:
+      AutoScalingConfigurationName: ErrorResolver-Scaling
+      MinSize: !Ref MinInstances
+      MaxSize: !Ref MaxInstances
+      MaxConcurrency: 10  # new instance spins up after 10 concurrent requests
+
+  # ── App Runner Service ────────────────────────────────────────────
+  AppRunnerService:
+    Type: AWS::AppRunner::Service
+    Properties:
+      ServiceName: error-resolver
+      SourceConfiguration:
+        AuthenticationConfiguration:
+          AccessRoleArn: !GetAtt AppRunnerECRAccessRole.Arn
+        AutoDeploymentsEnabled: true   # redeploy automatically on new ECR push
+        ImageRepository:
+          ImageIdentifier: !Ref ECRImageURI
+          ImageRepositoryType: ECR
+          ImageConfiguration:
+            Port: "8501"
+            RuntimeEnvironmentVariables:
+              # ── Non-sensitive ─────────────────────────────────────
+              - Name: AWS_REGION
+                Value: !Ref AWS::Region
+              - Name: GITHUB_REPO_OWNER
+                Value: !Ref GitHubRepoOwner
+              - Name: GITHUB_REPO_NAME
+                Value: !Ref GitHubRepoName
+              - Name: ORACLE_HOST
+                Value: !Ref OracleHost
+              - Name: ORACLE_PORT
+                Value: !Ref OraclePort
+              - Name: ORACLE_SERVICE_NAME
+                Value: !Ref OracleServiceName
+              - Name: COPILOT_ENDPOINT
+                Value: https://models.inference.ai.azure.com
+              - Name: COPILOT_MODEL
+                Value: !Ref CopilotModel
+              # Blank these out — secrets are injected directly below
+              - Name: AWS_SECRET_GITHUB
+                Value: ""
+              - Name: AWS_SECRET_ORACLE
+                Value: ""
+              - Name: AWS_SECRET_TAVILY
+                Value: ""
+            RuntimeEnvironmentSecrets:
+              # App Runner fetches these from Secrets Manager at startup
+              # and injects them as plain env vars — our code reads them normally
+              - Name: GITHUB_PAT
+                Value: !Sub
+                  - "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${Secret}:pat::"
+                  - Secret: !Ref AwsSecretGithub
+              - Name: ORACLE_USERNAME
+                Value: !Sub
+                  - "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${Secret}:username::"
+                  - Secret: !Ref AwsSecretOracle
+              - Name: ORACLE_PASSWORD
+                Value: !Sub
+                  - "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${Secret}:password::"
+                  - Secret: !Ref AwsSecretOracle
+              - Name: TAVILY_API_KEY
+                Value: !Sub
+                  - "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${Secret}:api_key::"
+                  - Secret: !Ref AwsSecretTavily
+      InstanceConfiguration:
+        Cpu: !Ref Cpu
+        Memory: !Ref Memory
+        InstanceRoleArn: !GetAtt AppRunnerInstanceRole.Arn
+      HealthCheckConfiguration:
+        Protocol: HTTP
+        Path: /_stcore/health
+        Interval: 10
+        Timeout: 5
+        HealthyThreshold: 1
+        UnhealthyThreshold: 3
+      AutoScalingConfigurationArn: !Ref AutoScalingConfig
+
+# ─────────────────────────────────────────────────────────────────────
+# Outputs
+# ─────────────────────────────────────────────────────────────────────
+Outputs:
+
+  AppURL:
+    Description: Error Resolver application URL (HTTPS, no port needed)
+    Value: !Sub https://${AppRunnerService.ServiceUrl}
+
+  ServiceArn:
+    Description: App Runner service ARN (use to trigger manual deploys)
+    Value: !GetAtt AppRunnerService.ServiceArn
+
+  ECRPushCommand:
+    Description: Tag and push a new image to trigger auto-redeploy
+    Value: !Sub
+      - "docker tag error-resolver:latest ${ECRImageURI} && docker push ${ECRImageURI}"
+      - ECRImageURI: !Ref ECRImageURI
