@@ -6,9 +6,13 @@ for richer results designed specifically for AI agents.
 """
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
+
+_MAX_QUERIES = 3       # stay within search API rate limits
+_MAX_RESULTS = 4       # results per query
 
 
 @dataclass
@@ -24,7 +28,7 @@ class WebErrorContext:
 
     query: str
     results: list[SearchResult] = field(default_factory=list)
-    formatted: str = ""  # Ready-to-use context string for the AI prompt
+    formatted: str = ""
 
 
 class WebSearchClient:
@@ -38,14 +42,18 @@ class WebSearchClient:
 
     def __init__(self, tavily_api_key: str = ""):
         self._tavily_key = tavily_api_key or os.environ.get("TAVILY_API_KEY", "")
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
-    def search(self, query: str, max_results: int = 6) -> list[SearchResult]:
-        """Run a web search and return a list of results."""
+        # Cache the client so it isn't reconstructed on every search call
+        self._tavily_client = None
         if self._tavily_key:
+            try:
+                from tavily import TavilyClient
+                self._tavily_client = TavilyClient(api_key=self._tavily_key)
+            except Exception as e:
+                logger.warning("Tavily client init failed, falling back to DuckDuckGo: %s", e)
+
+    def search(self, query: str, max_results: int = _MAX_RESULTS) -> list[SearchResult]:
+        """Run a web search and return a list of results."""
+        if self._tavily_client:
             return self._tavily_search(query, max_results)
         return self._ddg_search(query, max_results)
 
@@ -57,12 +65,7 @@ class WebSearchClient:
         stack_trace: str = "",
     ) -> WebErrorContext:
         """
-        Run multiple targeted searches to fully understand the error.
-
-        Searches for:
-        - The specific error type + message
-        - Known causes and fixes
-        - Stack trace identifiers if present
+        Run multiple targeted searches in parallel to fully understand the error.
 
         Returns a formatted context string ready for use in an AI prompt.
         """
@@ -70,30 +73,25 @@ class WebSearchClient:
         all_results: list[SearchResult] = []
         seen_urls: set[str] = set()
 
-        for query in queries:
-            results = self.search(query, max_results=4)
-            for r in results:
-                if r.url not in seen_urls:
-                    seen_urls.add(r.url)
-                    all_results.append(r)
-
-        formatted = _format_web_context(all_results)
+        # Queries are independent — run them in parallel
+        with ThreadPoolExecutor(max_workers=len(queries)) as pool:
+            futures = {pool.submit(self.search, q): q for q in queries}
+            for future in as_completed(futures):
+                for r in future.result():
+                    if r.url not in seen_urls:
+                        seen_urls.add(r.url)
+                        all_results.append(r)
 
         return WebErrorContext(
             query=" | ".join(queries),
             results=all_results,
-            formatted=formatted,
+            formatted=_format_web_context(all_results),
         )
-
-    # ------------------------------------------------------------------
-    # Backends
-    # ------------------------------------------------------------------
 
     def _ddg_search(self, query: str, max_results: int) -> list[SearchResult]:
         """DuckDuckGo search — free, no API key needed."""
         try:
             from duckduckgo_search import DDGS
-
             raw = DDGS().text(query, max_results=max_results)
             return [
                 SearchResult(
@@ -110,10 +108,7 @@ class WebSearchClient:
     def _tavily_search(self, query: str, max_results: int) -> list[SearchResult]:
         """Tavily search — higher quality results, designed for AI agents."""
         try:
-            from tavily import TavilyClient
-
-            client = TavilyClient(api_key=self._tavily_key)
-            response = client.search(
+            response = self._tavily_client.search(
                 query=query,
                 max_results=max_results,
                 search_depth="advanced",
@@ -127,20 +122,14 @@ class WebSearchClient:
                 )
                 for r in response.get("results", [])
             ]
-            # Tavily can return a synthesised answer — prepend it as a result
             if response.get("answer"):
-                results.insert(
-                    0,
-                    SearchResult(
-                        title="Tavily Answer",
-                        url="",
-                        snippet=response["answer"],
-                    ),
-                )
+                results.insert(0, SearchResult(
+                    title="Tavily Answer", url="", snippet=response["answer"]
+                ))
             return results
         except Exception as e:
             logger.error("Tavily search failed: %s", e)
-            return self._ddg_search(query, max_results)  # Fall back to DDG
+            return self._ddg_search(query, max_results)
 
 
 # ------------------------------------------------------------------
@@ -150,36 +139,31 @@ class WebSearchClient:
 def _build_search_queries(
     error_type: str, error_message: str, error_code: str, stack_trace: str
 ) -> list[str]:
-    """Build 2-3 focused search queries for thorough error research."""
+    """Build up to _MAX_QUERIES focused search queries for error research."""
     queries: list[str] = []
 
-    # Primary: exact error type + short message
     primary_terms = " ".join(filter(None, [error_type, error_code]))
     if error_message:
-        # Trim message to first 80 chars to keep the query tight
         short_msg = error_message[:80].rsplit(" ", 1)[0]
         queries.append(f"{primary_terms} {short_msg}")
     else:
         queries.append(primary_terms)
 
-    # Secondary: causes and fixes
     if error_type:
         queries.append(f"{error_type} root cause fix solution")
 
-    # Tertiary: stack trace top frame if present (often reveals the exact call)
     if stack_trace:
-        # Extract first non-blank line of the stack trace
         first_frame = next(
             (ln.strip() for ln in stack_trace.splitlines() if ln.strip()), ""
         )
         if first_frame and first_frame not in queries[0]:
             queries.append(f"{error_type} {first_frame[:100]}")
 
-    return queries[:3]  # Max 3 queries to stay within rate limits
+    return queries[:_MAX_QUERIES]
 
 
 def _format_web_context(results: list[SearchResult]) -> str:
-    """Format search results as a context block for the AI prompt."""
+    """Format search results as a markdown context block for the AI prompt."""
     if not results:
         return "No web search results found."
 

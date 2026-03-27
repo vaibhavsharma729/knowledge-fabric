@@ -2,8 +2,7 @@
 AWS RDS Oracle database client for querying error logs and schema information.
 
 Connects to Oracle DB on AWS RDS using python-oracledb (thin mode — no Oracle
-Instant Client required). Provides helpers to retrieve error logs, stack traces,
-and relevant schema/table information to aid in error resolution.
+Instant Client required).
 """
 import logging
 from contextlib import contextmanager
@@ -15,8 +14,9 @@ from config import OracleConfig
 
 logger = logging.getLogger(__name__)
 
-# Use thin mode — no Oracle client libraries required
-oracledb.init_oracle_client = lambda **_: None  # ensure thin mode is used
+oracledb.init_oracle_client = lambda **_: None  # thin mode — no Instant Client needed
+
+_MAX_SEARCH_KEYWORDS = 3  # keep searches within API rate limits
 
 
 class OracleClient:
@@ -27,10 +27,7 @@ class OracleClient:
         self._pool: Optional[oracledb.ConnectionPool] = None
 
     def connect(self) -> bool:
-        """
-        Establish a connection pool to the Oracle database.
-        Returns True on success, False on failure.
-        """
+        """Establish a connection pool. Returns True on success."""
         try:
             self._pool = oracledb.create_pool(
                 user=self.config.username,
@@ -40,7 +37,6 @@ class OracleClient:
                 max=5,
                 increment=1,
             )
-            # Verify connectivity with a test query
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute("SELECT 1 FROM DUAL")
@@ -67,6 +63,12 @@ class OracleClient:
         finally:
             self._pool.release(conn)
 
+    @staticmethod
+    def _cursor_to_dicts(cur) -> list[dict]:
+        """Convert cursor rows to a list of column-name-keyed dicts."""
+        columns = [desc[0] for desc in cur.description]
+        return [dict(zip(columns, row)) for row in cur.fetchall()]
+
     # ------------------------------------------------------------------
     # Error log queries
     # ------------------------------------------------------------------
@@ -79,16 +81,16 @@ class OracleClient:
         log_table: str = "APP_ERROR_LOGS",
     ) -> list[dict]:
         """
-        Query the application error log table for recent errors.
+        Query APP_ERROR_LOGS for recent errors.
 
-        Expects a table with columns: ERROR_ID, ERROR_CODE, ERROR_MESSAGE,
-        STACK_TRACE, CREATED_AT, MODULE_NAME, USER_ID (adjust as needed).
+        Expected columns: ERROR_ID, ERROR_CODE, ERROR_MESSAGE, STACK_TRACE,
+        CREATED_AT, MODULE_NAME, USER_ID — adjust table name as needed.
         """
         if self._pool is None:
             return []
 
         where_clauses = []
-        params = {}
+        params: dict = {}
 
         if error_code:
             where_clauses.append("ERROR_CODE = :error_code")
@@ -99,16 +101,9 @@ class OracleClient:
             params["msg_like"] = f"%{error_message_like}%"
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
-
         sql = f"""
-            SELECT
-                ERROR_ID,
-                ERROR_CODE,
-                ERROR_MESSAGE,
-                STACK_TRACE,
-                CREATED_AT,
-                MODULE_NAME,
-                USER_ID
+            SELECT ERROR_ID, ERROR_CODE, ERROR_MESSAGE, STACK_TRACE,
+                   CREATED_AT, MODULE_NAME, USER_ID
             FROM {log_table}
             {where_sql}
             ORDER BY CREATED_AT DESC
@@ -120,17 +115,13 @@ class OracleClient:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(sql, params)
-                    columns = [desc[0] for desc in cur.description]
-                    return [dict(zip(columns, row)) for row in cur.fetchall()]
+                    return self._cursor_to_dicts(cur)
         except Exception as e:
             logger.error("Error querying error logs: %s", e)
             return []
 
     def get_table_schema(self, table_name: str, schema: Optional[str] = None) -> list[dict]:
-        """
-        Retrieve column definitions for a table from Oracle data dictionary.
-        Useful for understanding DB schema context when resolving SQL errors.
-        """
+        """Retrieve column definitions from the Oracle data dictionary."""
         if self._pool is None:
             return []
 
@@ -141,15 +132,9 @@ class OracleClient:
             params["owner"] = schema.upper()
 
         sql = f"""
-            SELECT
-                COLUMN_NAME,
-                DATA_TYPE,
-                DATA_LENGTH,
-                NULLABLE,
-                DATA_DEFAULT
+            SELECT COLUMN_NAME, DATA_TYPE, DATA_LENGTH, NULLABLE, DATA_DEFAULT
             FROM ALL_TAB_COLUMNS
-            WHERE TABLE_NAME = :table_name
-            {owner_filter}
+            WHERE TABLE_NAME = :table_name {owner_filter}
             ORDER BY COLUMN_ID
         """
 
@@ -157,17 +142,13 @@ class OracleClient:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(sql, params)
-                    columns = [desc[0] for desc in cur.description]
-                    return [dict(zip(columns, row)) for row in cur.fetchall()]
+                    return self._cursor_to_dicts(cur)
         except Exception as e:
             logger.error("Error fetching schema for %s: %s", table_name, e)
             return []
 
     def execute_diagnostic_query(self, sql: str, params: Optional[dict] = None) -> list[dict]:
-        """
-        Execute a read-only diagnostic SQL query.
-        Only SELECT statements are permitted.
-        """
+        """Execute a read-only SELECT query for diagnostics."""
         if self._pool is None:
             return []
 
@@ -179,8 +160,7 @@ class OracleClient:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(sql, params or {})
-                    columns = [desc[0] for desc in cur.description]
-                    return [dict(zip(columns, row)) for row in cur.fetchall()]
+                    return self._cursor_to_dicts(cur)
         except Exception as e:
             logger.error("Diagnostic query failed: %s", e)
             return []
@@ -189,30 +169,46 @@ class OracleClient:
         self, error_keywords: list[str], limit: int = 10
     ) -> str:
         """
-        Retrieve error log entries related to the given keywords and format
-        as a context string for the AI resolver.
+        Fetch error log rows matching any of the keywords in a single query,
+        then format as a markdown context string for the AI prompt.
         """
         if self._pool is None:
             return "Oracle database not connected."
 
-        all_logs: list[dict] = []
-        seen_ids: set = set()
+        keywords = error_keywords[:_MAX_SEARCH_KEYWORDS]
+        if not keywords:
+            return "No keywords provided."
 
-        for keyword in error_keywords[:3]:
-            logs = self.get_recent_error_logs(
-                error_message_like=keyword, limit=limit
-            )
-            for log in logs:
-                eid = log.get("ERROR_ID")
-                if eid not in seen_ids:
-                    seen_ids.add(eid)
-                    all_logs.append(log)
+        # Single batched query with OR clauses instead of N separate queries
+        or_clauses = " OR ".join(
+            f"UPPER(ERROR_MESSAGE) LIKE UPPER(:kw{i})" for i in range(len(keywords))
+        )
+        params: dict = {f"kw{i}": f"%{kw}%" for i, kw in enumerate(keywords)}
+        params["limit"] = limit
 
-        if not all_logs:
+        sql = f"""
+            SELECT ERROR_ID, ERROR_CODE, ERROR_MESSAGE, STACK_TRACE,
+                   CREATED_AT, MODULE_NAME, USER_ID
+            FROM APP_ERROR_LOGS
+            WHERE {or_clauses}
+            ORDER BY CREATED_AT DESC
+            FETCH FIRST :limit ROWS ONLY
+        """
+
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, params)
+                    logs = self._cursor_to_dicts(cur)
+        except Exception as e:
+            logger.error("Error querying error logs: %s", e)
+            return "Database query failed."
+
+        if not logs:
             return "No matching error records found in the database."
 
         lines = ["### Recent DB Error Logs\n"]
-        for log in all_logs[:limit]:
+        for log in logs:
             lines.append(
                 f"- **ID**: {log.get('ERROR_ID')} | "
                 f"**Code**: {log.get('ERROR_CODE')} | "
