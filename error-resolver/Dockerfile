@@ -20,7 +20,7 @@ EXPOSE 8501
 ENV COPILOT_ENDPOINT=https://models.inference.ai.azure.com \
     COPILOT_MODEL=gpt-4o
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=15s \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s \
   CMD curl -f http://localhost:8501/_stcore/health || exit 1
 
 CMD ["streamlit", "run", "app.py", \

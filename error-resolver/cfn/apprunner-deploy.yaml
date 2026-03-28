@@ -210,12 +210,11 @@ Resources:
         Memory: !Ref Memory
         InstanceRoleArn: !GetAtt AppRunnerInstanceRole.Arn
       HealthCheckConfiguration:
-        Protocol: HTTP
-        Path: /_stcore/health
+        Protocol: TCP
         Interval: 10
         Timeout: 5
         HealthyThreshold: 1
-        UnhealthyThreshold: 3
+        UnhealthyThreshold: 5
       AutoScalingConfigurationArn: !Ref AutoScalingConfig
 
 # ─────────────────────────────────────────────────────────────────────
