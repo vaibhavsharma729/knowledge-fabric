@@ -115,7 +115,7 @@ echo "   ECR repository: ${ECR_REGISTRY}/${ECR_REPO}"
 if [[ "$SKIP_BUILD" == false ]]; then
   echo ""
   echo "▶ Step 2/4 — Building Docker image..."
-  docker build -t "${ECR_REPO}:${IMAGE_TAG}" "$APP_DIR"
+  docker build --platform linux/amd64 -t "${ECR_REPO}:${IMAGE_TAG}" "$APP_DIR"
 
   echo ""
   echo "▶ Pushing to ECR..."
