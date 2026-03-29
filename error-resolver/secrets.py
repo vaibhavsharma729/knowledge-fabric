@@ -44,8 +44,13 @@ def get_secret(secret_name: str) -> dict:
     """
     try:
         import boto3
+        from botocore.config import Config
 
-        client = boto3.client("secretsmanager", region_name=_AWS_REGION)
+        client = boto3.client(
+            "secretsmanager",
+            region_name=_AWS_REGION,
+            config=Config(connect_timeout=3, read_timeout=3, retries={"max_attempts": 1}),
+        )
         response = client.get_secret_value(SecretId=secret_name)
         raw = response.get("SecretString", "{}")
         return json.loads(raw)

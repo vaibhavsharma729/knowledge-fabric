@@ -483,17 +483,8 @@ def _render_resolution(result: ResolutionResult):
 def main():
     _init_state()
 
-    # Auto-initialize Copilot + GitHub + web search from env on first load.
-    # Oracle is intentionally excluded here — it blocks if the DB is unreachable.
-    # Oracle connects only when the user explicitly clicks "Connect / Refresh".
-    if st.session_state.analyzer is None:
-        cfg = AppConfig.from_env()
-        if cfg.copilot.github_token:
-            st.session_state.config = cfg
-            st.session_state.analyzer = ErrorAnalyzer(cfg.copilot)
-            st.session_state.web_search_client = WebSearchClient(tavily_api_key=cfg.tavily_api_key)
-            if cfg.github.personal_access_token:
-                st.session_state.github_client = GitHubMCPClient(cfg.github)
+    # No auto-init on startup — avoids blocking on Secrets Manager / Oracle calls.
+    # Use the "Connect / Refresh" button in the sidebar to initialize clients.
 
     _render_sidebar()
     _render_input_section()
