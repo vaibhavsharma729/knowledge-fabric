@@ -209,6 +209,9 @@ Resources:
         Cpu: !Ref Cpu
         Memory: !Ref Memory
         InstanceRoleArn: !GetAtt AppRunnerInstanceRole.Arn
+      NetworkConfiguration:
+        IngressConfiguration:
+          IsPubliclyAccessible: true
       HealthCheckConfiguration:
         Protocol: TCP
         Interval: 10
