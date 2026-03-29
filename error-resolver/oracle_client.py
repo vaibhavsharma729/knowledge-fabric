@@ -33,9 +33,10 @@ class OracleClient:
                 user=self.config.username,
                 password=self.config.password,
                 dsn=self.config.dsn,
-                min=1,
+                min=0,
                 max=5,
                 increment=1,
+                timeout=5,
             )
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
