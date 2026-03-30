@@ -244,12 +244,15 @@ Respond with a JSON object (and nothing else):
 """
 
 _RESOLUTION_PROMPT = """\
-You are a senior software engineer and database administrator providing a step-by-step fix \
-for an error. You have three sources of context — use them in this order of priority:
+You are a senior software engineer and database administrator. Your job is to diagnose an error \
+using three sources of evidence and then prescribe the exact fix — whether that fix belongs in \
+the application code, the database schema/data, or both.
 
-  1. **Web knowledge** — what is known about this error globally (authoritative)
-  2. **Repository code** — where and how the error manifests in THIS specific codebase
-  3. **Database logs** — historical occurrences in THIS specific environment
+Sources (use all three):
+  1. **Web knowledge** — globally known cause and fix for this error type
+  2. **Repository code** — the actual application code from GitHub (read file names, function \
+names, SQL, variable names carefully)
+  3. **Database logs** — real error records from Oracle RDS showing when/where this happened
 
 ## Error Details
 - **Type**: {error_type}
@@ -259,35 +262,40 @@ for an error. You have three sources of context — use them in this order of pr
 {stack_trace}
 - **File**: {file_path} (line {line_number})
 
-## Web Research (global knowledge about this error)
+## Web Research
 {web_context}
 
-## Repository Code (from GitHub — the actual application code)
+## Repository Code (actual application source from GitHub)
 {github_context}
 
-## Database Logs (from Oracle RDS)
+## Oracle DB Error Logs (real historical occurrences)
 {db_context}
 
 ---
 
-Using ALL of the above, provide:
+Based on everything above, determine:
 
-1. **Root Cause** — explain exactly why this error occurs, combining global knowledge with \
-what you can see in the repository code (2-4 sentences).
-2. **Resolution Steps** — numbered, specific, actionable steps referencing actual file names, \
-function names, SQL statements, or config values found in the repository code where possible.
-3. **Code References** — exact files, functions, or DB objects in the repository that need \
-to be changed or inspected.
-4. **Prevention Tips** — 2-3 tips specific to this codebase to prevent recurrence.
-5. **Web Sources** — list the URLs from the web research that were most relevant.
-6. **Confidence** — low, medium, or high.
+**Where does the fix belong?**
+- If the application code has a bug (wrong logic, missing null check, bad type conversion, \
+  wrong SQL) → provide the exact code change with file name and line reference.
+- If the database has bad data, a missing column, wrong constraint, or needs a schema change \
+  → provide the exact SQL statement to fix it (ALTER TABLE, UPDATE, INSERT, etc.).
+- If BOTH need fixing → provide fixes for both layers.
 
 Respond with a JSON object (and nothing else):
 {{
-  "root_cause": "<explanation>",
-  "resolution_steps": ["<step 1>", "<step 2>", ...],
-  "code_references": ["<file or function>", ...],
-  "prevention_tips": ["<tip>", ...],
+  "root_cause": "<2-4 sentence explanation of exactly why this error occurs, referencing \
+specific code or DB objects you can see in the context above>",
+  "fix_layer": "code|database|both",
+  "resolution_steps": [
+    "<Step 1 — be specific: name the exact file, function, line, SQL statement, or DB object>",
+    "<Step 2>",
+    "..."
+  ],
+  "code_fix": "<exact code snippet to change in the application, or empty string if not needed>",
+  "sql_fix": "<exact SQL statement(s) to run against the database, or empty string if not needed>",
+  "code_references": ["<file::function or table::column that needs changing>", ...],
+  "prevention_tips": ["<tip specific to this codebase>", ...],
   "web_sources": ["<url>", ...],
   "confidence": "low|medium|high"
 }}
@@ -324,7 +332,7 @@ def _parse_error_info(response_text: str, raw_text: str = "") -> ErrorInfo:
 def _parse_resolution(response_text: str, error_info: ErrorInfo) -> ResolutionResult:
     try:
         data = _extract_json(response_text)
-        return ResolutionResult(
+        result = ResolutionResult(
             error_info=error_info,
             root_cause=data.get("root_cause", ""),
             resolution_steps=data.get("resolution_steps", []),
@@ -333,6 +341,17 @@ def _parse_resolution(response_text: str, error_info: ErrorInfo) -> ResolutionRe
             web_sources=data.get("web_sources", []),
             confidence=data.get("confidence", "medium"),
         )
+        # Inject code/SQL fixes into resolution steps if present
+        code_fix = data.get("code_fix", "").strip()
+        sql_fix = data.get("sql_fix", "").strip()
+        fix_layer = data.get("fix_layer", "")
+        if code_fix:
+            result.resolution_steps.append(f"**Code fix:**\n```\n{code_fix}\n```")
+        if sql_fix:
+            result.resolution_steps.append(f"**SQL fix (run against Oracle DB):**\n```sql\n{sql_fix}\n```")
+        if fix_layer:
+            result.root_cause = f"[Fix in: {fix_layer.upper()}] " + result.root_cause
+        return result
     except Exception as e:
         logger.warning("Failed to parse resolution JSON: %s", e)
         return ResolutionResult(

@@ -45,10 +45,13 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="resolve_error",
             description=(
-                "Analyze an error message or stack trace and return a step-by-step "
-                "resolution. Searches the web for context, scans your GitHub repository "
-                "for relevant code, and queries Oracle DB error logs. "
-                "Use this whenever a user pastes an error or describes a bug."
+                "Analyze an error message or stack trace and return a step-by-step fix. "
+                "Reads the actual application code from GitHub, queries Oracle DB error logs "
+                "for historical occurrences, and searches the web for known solutions. "
+                "The AI then determines whether the fix belongs in the application code, "
+                "the database (schema or data), or both — and provides the exact change: "
+                "file + function to edit, or SQL statement to run. "
+                "Use this whenever a user pastes an error, stack trace, or describes a bug."
             ),
             inputSchema={
                 "type": "object",

@@ -1,0 +1,16 @@
+order_id,customer_id,customer_name,product_id,product_name,quantity,unit_price,order_date,discount_pct,region
+1001,C001,Alice Johnson,P101,Laptop Pro,2,1299.99,2024-01-15,10,US-EAST
+1002,C002,Bob Smith,P102,Wireless Mouse,5,29.99,2024-01-16,0,US-WEST
+1003,C003,,P103,USB Hub,3,49.99,2024-01-17,5,EU
+1004,C004,Diana Lee,P101,Laptop Pro,,1299.99,2024-01-18,0,US-EAST
+1005,C005,Evan Brown,P104,Monitor 27",2,399.99,2024-01-19,15,APAC
+1006,C006,Fiona Clark,P102,Wireless Mouse,3,29.99,not-a-date,0,US-WEST
+1007,C007,George Hall,P105,Keyboard,4,89.99,2024-01-21,110,EU
+1008,C008,Hannah White,P101,Laptop Pro,1,1299.99,2024-01-22,20,US-EAST
+1009,,Ivan Black,P103,USB Hub,2,49.99,2024-01-23,0,APAC
+1010,C010,Julia Green,P106,,3,,2024-01-24,5,US-WEST
+1011,C011,Karl Young,P104,Monitor 27",0,399.99,2024-01-25,10,EU
+1012,C012,Laura King,P107,Webcam HD,2,149.99,2024-01-26,0,US-EAST
+1013,C013,Mike Scott,P102,Wireless Mouse,abc,29.99,2024-01-27,0,APAC
+1014,C014,Nancy Adams,P108,Headphones,3,199.99,2024-01-28,25,US-WEST
+1015,C015,Oscar Turner,P101,Laptop Pro,2,-500.00,2024-01-29,0,EU
