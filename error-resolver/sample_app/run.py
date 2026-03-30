@@ -1,17 +1,23 @@
 """
-Run the Order Data Processor.
+Run the Accounting Rules Processor.
 
-This script:
-  1. Connects to Oracle (optional — errors still print if Oracle is unavailable)
-  2. Processes orders.csv — validates each row
-  3. Logs real errors to APP_ERROR_LOGS in Oracle
-  4. Prints a summary report
+This script simulates what happens when users try to add new records
+after a database migration that left the sequence out of sync with
+the actual max OBJECT_ID in the table.
+
+What happens:
+  - Users try to insert new accounting rules
+  - Oracle generates the next sequence value (e.g. 6, 7, 8...)
+  - Those IDs already exist in the table (inserted manually during migration)
+  - ORA-00001: unique constraint violated
+  - Error is logged to APP_ERROR_LOGS in Oracle
 
 After running, open GitHub Copilot Chat in VS Code and ask:
-  "Query the error logs and help me fix the data processing errors"
+  "Query the error logs and tell me the root cause and fix"
 
-The MCP server will query APP_ERROR_LOGS and return AI-generated fixes
-based on the actual errors that just occurred.
+The MCP server reads the real error from Oracle and the actual app code
+from GitHub, then the AI identifies the sequence sync issue and suggests
+the exact SQL to fix it.
 
 Usage:
     cd error-resolver
@@ -31,17 +37,17 @@ load_dotenv()
 from config import AppConfig
 from oracle_client import OracleClient
 from sample_app.error_logger import ErrorLogger
-from sample_app.data_processor import OrderProcessor
+from sample_app.accounting_rules_processor import AccountingRulesProcessor
 
 
 def main():
     print("=" * 50)
-    print("  Order Data Processor")
+    print("  Accounting Rules Processor")
     print("=" * 50)
 
     cfg = AppConfig.from_env()
 
-    # ── Connect to Oracle (optional) ──────────────────────────────
+    # ── Connect to Oracle ──────────────────────────────────────────
     oracle_client = None
     error_logger = None
 
@@ -53,26 +59,37 @@ def main():
             print("[DB] Connected — errors will be logged to APP_ERROR_LOGS")
             error_logger = ErrorLogger(oracle_client)
         else:
-            print("[DB] Could not connect — errors will print only (not logged to DB)")
+            print("[DB] Could not connect — check ORACLE_HOST / credentials in .env")
+            sys.exit(1)
     else:
-        print("\n[DB] ORACLE_HOST not set — skipping DB logging.")
-        print("[DB] Set ORACLE_HOST in .env to enable error logging to Oracle.\n")
+        print("\n[DB] ORACLE_HOST not set in .env — cannot run.")
+        print("[DB] Set ORACLE_HOST, ORACLE_SERVICE_NAME, and credentials, then re-run.")
+        sys.exit(1)
 
-    # ── Process orders ─────────────────────────────────────────────
-    processor = OrderProcessor(error_logger=error_logger)
-    result = processor.process_csv()
-    processor.print_summary(result)
+    # ── Run the processor ──────────────────────────────────────────
+    processor = AccountingRulesProcessor(
+        oracle_client=oracle_client,
+        error_logger=error_logger,
+    )
+    result = processor.process_all()
 
-    # ── Prompt user to use Copilot Chat ───────────────────────────
-    if result.failed_rows and oracle_client:
-        print("Errors logged to Oracle APP_ERROR_LOGS.")
-        print("\nNow open GitHub Copilot Chat in VS Code and ask:")
-        print('  "Query the error logs and help me fix the order processing errors"\n')
-    elif result.failed_rows:
-        print(f"{len(result.failed_rows)} errors found (not logged — Oracle not connected).")
-        print("\nTo log errors to Oracle, set ORACLE_HOST in .env and re-run.\n")
+    # ── Summary ────────────────────────────────────────────────────
+    print(f"\n{'=' * 50}")
+    if result["failed"] > 0:
+        print(f"  {result['failed']} errors logged to APP_ERROR_LOGS in Oracle.")
+        print()
+        print("  Now open GitHub Copilot Chat in VS Code and ask:")
+        print('  "Query the error logs and tell me the root cause and fix"')
+        print()
+        print("  The AI will:")
+        print("  1. Read the real errors from APP_ERROR_LOGS")
+        print("  2. Read AccountingRulesProcessor code from GitHub")
+        print("  3. Identify the sequence sync issue")
+        print("  4. Suggest the exact SQL to fix it")
+    else:
+        print("  All rules inserted successfully.")
+    print(f"{'=' * 50}\n")
 
-    # ── Cleanup ────────────────────────────────────────────────────
     if oracle_client:
         oracle_client.close()
 
