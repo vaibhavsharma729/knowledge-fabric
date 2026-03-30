@@ -1,0 +1,11 @@
+{
+  "servers": {
+    "error-resolver": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["${workspaceFolder}/error-resolver/mcp_server.py"],
+      "cwd": "${workspaceFolder}/error-resolver",
+      "env": {}
+    }
+  }
+}
