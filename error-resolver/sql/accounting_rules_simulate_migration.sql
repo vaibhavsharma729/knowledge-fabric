@@ -36,16 +36,17 @@ SELECT MAX(OBJECT_ID) AS MAX_OBJECT_ID FROM ACCOUNTING_RULES;
 
 
 -- STEP 2: Simulate the bad migration
--- Missed records manually inserted with OBJECT_ID = max + 1000
+-- Missed records manually inserted with OBJECT_ID just above the current max
+-- (in real migration these were inserted using old backup IDs)
 -- Sequence is NOT updated -- this is the root cause of the bug
 INSERT INTO ACCOUNTING_RULES (OBJECT_ID, RULE_CODE, RULE_DESCRIPTION, ACCOUNT_ID, CREATED_BY)
-VALUES (1005, 'RULE-006', 'Budget Allocation Rule - MIGRATED', 'ACC-006', 'migration_script');
+VALUES (6, 'RULE-006M', 'Budget Allocation Rule - MIGRATED', 'ACC-006', 'migration_script');
 
 INSERT INTO ACCOUNTING_RULES (OBJECT_ID, RULE_CODE, RULE_DESCRIPTION, ACCOUNT_ID, CREATED_BY)
-VALUES (1006, 'RULE-007', 'Cost Centre Rule - MIGRATED', 'ACC-007', 'migration_script');
+VALUES (7, 'RULE-007M', 'Cost Centre Rule - MIGRATED', 'ACC-007', 'migration_script');
 
 INSERT INTO ACCOUNTING_RULES (OBJECT_ID, RULE_CODE, RULE_DESCRIPTION, ACCOUNT_ID, CREATED_BY)
-VALUES (1007, 'RULE-008', 'Intercompany Settlement Rule - MIGRATED', 'ACC-008', 'migration_script');
+VALUES (8, 'RULE-008M', 'Intercompany Settlement Rule - MIGRATED', 'ACC-008', 'migration_script');
 
 COMMIT;
 
