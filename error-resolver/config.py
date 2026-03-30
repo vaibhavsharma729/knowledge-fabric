@@ -15,7 +15,7 @@ Non-sensitive values (hostnames, region, model name) can still go in .env.
 import os
 from dataclasses import dataclass
 
-from secrets import resolve
+from aws_secrets import resolve
 
 
 @dataclass
