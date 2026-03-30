@@ -4,14 +4,15 @@
 -- This is the resolution the AI model should identify and suggest.
 -- Run this after the duplicate key errors start appearing.
 --
--- Replace 1008 below with the result of STEP 1's SEQUENCE_SHOULD_START_AT.
+-- Replace 1008 in STEP 3 with the SEQUENCE_SHOULD_START_AT value
+-- returned by STEP 1.
 -- =============================================================
 
 -- STEP 1: Check the gap (run this first to get the correct START WITH value)
 SELECT
-    s.LAST_NUMBER                 AS SEQUENCE_CURRENT,
-    MAX(r.OBJECT_ID)              AS MAX_OBJECT_ID,
-    MAX(r.OBJECT_ID) + 1         AS SEQUENCE_SHOULD_START_AT
+    s.LAST_NUMBER              AS SEQUENCE_CURRENT,
+    MAX(r.OBJECT_ID)          AS MAX_OBJECT_ID,
+    MAX(r.OBJECT_ID) + 1     AS SEQUENCE_SHOULD_START_AT
 FROM ACCOUNTING_RULES r, USER_SEQUENCES s
 WHERE s.SEQUENCE_NAME = 'ACCOUNTING_RULES_SEQ'
 GROUP BY s.LAST_NUMBER;
@@ -27,5 +28,5 @@ CREATE SEQUENCE ACCOUNTING_RULES_SEQ
     NOCACHE
     NOCYCLE;
 
--- STEP 4: Verify the fix — new inserts should now work
-SELECT 'Sequence reset. Next value:' AS STATUS, ACCOUNTING_RULES_SEQ.NEXTVAL AS NEXT_ID FROM DUAL;
+-- STEP 4: Verify the fix -- new inserts should now work
+SELECT ACCOUNTING_RULES_SEQ.NEXTVAL AS NEXT_ID FROM DUAL;

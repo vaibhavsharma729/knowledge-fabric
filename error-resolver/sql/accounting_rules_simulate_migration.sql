@@ -6,7 +6,7 @@
 --   2. Simulate migration: manually insert missed records with
 --      OBJECT_ID = current_max + 1000 (but sequence NOT updated)
 --   3. Sequence is now behind the actual max OBJECT_ID
---      → next INSERT generates a duplicate OBJECT_ID → ORA-00001
+--      Next INSERT generates a duplicate OBJECT_ID -> ORA-00001
 --
 -- Run each statement separately in DBeaver (Ctrl+Enter)
 -- =============================================================
@@ -30,14 +30,14 @@ VALUES (ACCOUNTING_RULES_SEQ.NEXTVAL, 'RULE-005', 'Tax Computation Rule', 'ACC-0
 
 COMMIT;
 
--- Verify: sequence = 5, max OBJECT_ID = 5 (in sync — healthy state)
+-- Verify: sequence = 5, max OBJECT_ID = 5 (in sync - healthy state)
 SELECT LAST_NUMBER AS SEQUENCE_CURRENT FROM USER_SEQUENCES WHERE SEQUENCE_NAME = 'ACCOUNTING_RULES_SEQ';
 SELECT MAX(OBJECT_ID) AS MAX_OBJECT_ID FROM ACCOUNTING_RULES;
 
 
 -- STEP 2: Simulate the bad migration
 -- Missed records manually inserted with OBJECT_ID = max + 1000
--- Sequence is NOT updated — this is the root cause of the bug
+-- Sequence is NOT updated -- this is the root cause of the bug
 INSERT INTO ACCOUNTING_RULES (OBJECT_ID, RULE_CODE, RULE_DESCRIPTION, ACCOUNT_ID, CREATED_BY)
 VALUES (1005, 'RULE-006', 'Budget Allocation Rule - MIGRATED', 'ACC-006', 'migration_script');
 
@@ -51,6 +51,6 @@ COMMIT;
 
 -- Verify the gap: sequence stuck at 5, max OBJECT_ID jumped to 1007 (OUT OF SYNC)
 -- Sequence will next generate 6, 7, 8 ... eventually reach 1005, 1006, 1007
--- which already exist → ORA-00001 unique constraint violation
+-- which already exist -> ORA-00001 unique constraint violation
 SELECT LAST_NUMBER AS SEQUENCE_STUCK_AT FROM USER_SEQUENCES WHERE SEQUENCE_NAME = 'ACCOUNTING_RULES_SEQ';
 SELECT MAX(OBJECT_ID) AS MAX_OBJECT_ID_JUMPED_TO FROM ACCOUNTING_RULES;
