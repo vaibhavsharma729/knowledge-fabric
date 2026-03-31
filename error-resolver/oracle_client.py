@@ -66,9 +66,17 @@ class OracleClient:
 
     @staticmethod
     def _cursor_to_dicts(cur) -> list[dict]:
-        """Convert cursor rows to a list of column-name-keyed dicts."""
+        """Convert cursor rows to a list of column-name-keyed dicts.
+        Reads Oracle LOB objects (CLOB/BLOB) into plain strings automatically.
+        """
         columns = [desc[0] for desc in cur.description]
-        return [dict(zip(columns, row)) for row in cur.fetchall()]
+        rows = []
+        for row in cur.fetchall():
+            d = {}
+            for col, val in zip(columns, row):
+                d[col] = val.read() if hasattr(val, "read") else val
+            rows.append(d)
+        return rows
 
     # ------------------------------------------------------------------
     # Error log queries
