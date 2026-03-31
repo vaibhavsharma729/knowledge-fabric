@@ -104,6 +104,38 @@ async def list_tools() -> list[Tool]:
                 "required": ["keywords"],
             },
         ),
+        Tool(
+            name="query_database",
+            description=(
+                "Run any read-only SELECT query against the Oracle RDS database. "
+                "Use this to investigate data issues in ANY table — not just error logs. "
+                "For example: check for duplicate primary keys, inspect sequence values, "
+                "look at table data to find the root cause of an error, verify constraints, "
+                "or count records. Only SELECT and WITH queries are allowed (no DML/DDL). "
+                "Use this when the error is related to data quality, missing records, "
+                "duplicate keys, wrong values, or any database state issue."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "sql": {
+                        "type": "string",
+                        "description": (
+                            "A read-only SELECT or WITH query to run. "
+                            "Examples: "
+                            "'SELECT MAX(OBJECT_ID), COUNT(*) FROM ACCOUNTING_RULES', "
+                            "'SELECT LAST_NUMBER FROM USER_SEQUENCES WHERE SEQUENCE_NAME = :seq_name', "
+                            "'SELECT * FROM ACCOUNTING_RULES WHERE CREATED_BY = :created_by'"
+                        ),
+                    },
+                    "params": {
+                        "type": "object",
+                        "description": "Optional bind parameters as key-value pairs e.g. {\"seq_name\": \"ACCOUNTING_RULES_SEQ\"}",
+                    },
+                },
+                "required": ["sql"],
+            },
+        ),
     ]
 
 
@@ -217,6 +249,28 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text="Could not connect to Oracle DB.")]
         context = await _run_sync(oracle_client.get_db_context_for_error, keywords)
         return [TextContent(type="text", text=context)]
+
+    # ── query_database ─────────────────────────────────────────────
+    if name == "query_database":
+        sql: str = arguments["sql"]
+        params: dict = arguments.get("params", {})
+        if not cfg.oracle.host:
+            return [TextContent(type="text", text="ORACLE_HOST not configured.")]
+        oracle_client = OracleClient(cfg.oracle)
+        connected = await _run_sync(oracle_client.connect)
+        if not connected:
+            return [TextContent(type="text", text="Could not connect to Oracle DB.")]
+        rows = await _run_sync(oracle_client.execute_diagnostic_query, sql, params)
+        if not rows:
+            return [TextContent(type="text", text="Query returned no rows.")]
+        # Format as a readable table
+        headers = list(rows[0].keys())
+        lines = ["| " + " | ".join(headers) + " |"]
+        lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
+        for row in rows:
+            lines.append("| " + " | ".join(str(row.get(h, "")) for h in headers) + " |")
+        lines.append(f"\n_{len(rows)} row(s) returned._")
+        return [TextContent(type="text", text="\n".join(lines))]
 
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
